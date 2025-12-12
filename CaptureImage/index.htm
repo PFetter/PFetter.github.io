@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Image Capture & Copy</title>
+  <title>Capture, Copy & Share Image</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -61,7 +61,7 @@
   </style>
 </head>
 <body>
-  <h1>Capture & Copy Image</h1>
+  <h1>Capture, Copy & Share Image</h1>
   <video id="video" autoplay playsinline></video>
   <canvas id="canvas" style="display:none;"></canvas>
   <img id="snapshot" alt="Captured image will appear here">
@@ -69,6 +69,9 @@
   <div class="buttons">
     <button id="captureBtn">Capture Image</button>
     <button id="copyBtn">Copy to Clipboard</button>
+    <button id="downloadBtn">Download Image</button>
+    <button id="toggleCameraBtn">Switch Camera</button>
+    <button id="shareBtn" style="display:none;">Share Image</button>
   </div>
 
   <script>
@@ -77,15 +80,27 @@
     const snapshot = document.getElementById('snapshot');
     const captureBtn = document.getElementById('captureBtn');
     const copyBtn = document.getElementById('copyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const toggleCameraBtn = document.getElementById('toggleCameraBtn');
+    const shareBtn = document.getElementById('shareBtn');
 
-    // Request webcam access
-    navigator.mediaDevices.getUserMedia({ video: true })
-      .then(stream => {
+    let currentFacingMode = "user"; // start with front camera
+    let stream;
+
+    async function startCamera(facingMode) {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
         video.srcObject = stream;
-      })
-      .catch(err => {
+      } catch (err) {
         alert("Error accessing camera: " + err);
-      });
+      }
+    }
+
+    // Initialize camera
+    startCamera(currentFacingMode);
 
     // Capture image
     captureBtn.addEventListener('click', () => {
@@ -96,23 +111,74 @@
       snapshot.src = canvas.toDataURL('image/png');
     });
 
-    // Copy image to clipboard
+    // Copy image to clipboard (with fallback)
     copyBtn.addEventListener('click', async () => {
       if (!snapshot.src) {
         alert("Please capture an image first.");
         return;
       }
       try {
-        const response = await fetch(snapshot.src);
-        const blob = await response.blob();
-        await navigator.clipboard.write([
-          new ClipboardItem({ [blob.type]: blob })
-        ]);
-        alert("Image copied to clipboard!");
+        if (navigator.clipboard && window.ClipboardItem) {
+          const response = await fetch(snapshot.src);
+          const blob = await response.blob();
+          await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type]: blob })
+          ]);
+          alert("Image copied to clipboard!");
+        } else {
+          await navigator.clipboard.writeText(snapshot.src);
+          alert("Image copy not supported. Data URL copied instead.");
+        }
       } catch (err) {
-        alert("Failed to copy image: " + err);
+        try {
+          await navigator.clipboard.writeText(snapshot.src);
+          alert("Image copy not supported. Data URL copied instead.");
+        } catch (err2) {
+          alert("Failed to copy: " + err2);
+        }
       }
     });
+
+    // Download image
+    downloadBtn.addEventListener('click', () => {
+      if (!snapshot.src) {
+        alert("Please capture an image first.");
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = snapshot.src;
+      link.download = "captured.png";
+      link.click();
+    });
+
+    // Toggle camera
+    toggleCameraBtn.addEventListener('click', () => {
+      currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+      startCamera(currentFacingMode);
+    });
+
+    // Share image (only if supported)
+    if (navigator.share) {
+      shareBtn.style.display = "inline-block";
+      shareBtn.addEventListener('click', async () => {
+        if (!snapshot.src) {
+          alert("Please capture an image first.");
+          return;
+        }
+        try {
+          const response = await fetch(snapshot.src);
+          const blob = await response.blob();
+          const file = new File([blob], "captured.png", { type: blob.type });
+          await navigator.share({
+            files: [file],
+            title: "Captured Image",
+            text: "Sharing an image captured from the camera"
+          });
+        } catch (err) {
+          alert("Sharing failed: " + err);
+        }
+      });
+    }
   </script>
 </body>
 </html>
