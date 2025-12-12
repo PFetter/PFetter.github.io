@@ -1,45 +1,331 @@
-let frameCount = 0;
-let lastDetected = null;
-let lastDetectedTime = 0;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Barcode + QR Scanner PWA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-function scanFrame() {
-  if (video.readyState === video.HAVE_ENOUGH_DATA) {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  <!-- Inline PWA manifest -->
+  <link rel="manifest" href="data:application/json,{
+    &quot;name&quot;:&quot;Barcode + QR Scanner&quot;,
+    &quot;short_name&quot;:&quot;Scanner&quot;,
+    &quot;start_url&quot;:&quot;.&quot;,
+    &quot;display&quot;:&quot;standalone&quot;,
+    &quot;background_color&quot;:&quot;#ffffff&quot;,
+    &quot;theme_color&quot;:&quot;#0b5&quot;,
+    &quot;icons&quot;:[]
+  }">
 
-    // Try QR every frame (fast)
-    const qr = jsQR(imageData.data, canvas.width, canvas.height);
-    if (qr) {
-      lastDetected = "QR: " + qr.data;
-      lastDetectedTime = Date.now();
-    } else {
-      // Only run Quagga every 10th frame
-      if (frameCount % 10 === 0) {
-        Quagga.decodeSingle({
-          src: canvas.toDataURL(),
-          numOfWorkers: 0,
-          inputStream: { size: canvas.width },
-          decoder: { readers: ["code_128_reader","ean_reader","upc_reader","code_39_reader"] }
-        }, function(result) {
-          if (result && result.codeResult) {
-            lastDetected = "Barcode: " + result.codeResult.code;
-            lastDetectedTime = Date.now();
-          }
-        });
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      background: #f6f7f9;
+    }
+    main {
+      width: 100%;
+      max-width: 700px;
+      padding: 1rem;
+    }
+    h1 {
+      font-size: 1.4rem;
+      margin: 0 0 0.75rem;
+      text-align: center;
+    }
+    .video-wrap {
+      position: relative;
+      border: 4px solid #ccc;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+      transition: border-color 150ms ease, box-shadow 150ms ease;
+      background: #000;
+    }
+    .video-wrap.detected {
+      border-color: #1db954; /* green flash */
+      box-shadow: 0 0 0 4px rgba(29,185,84,0.2), 0 12px 24px rgba(0,0,0,0.25);
+    }
+    video {
+      width: 100%;
+      display: block;
+      aspect-ratio: 16 / 9;
+      background: #000;
+    }
+    .controls {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      appearance: none;
+      border: 1px solid #ddd;
+      background: #fff;
+      color: #111;
+      padding: 0.6rem 0.9rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 80ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+    button:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.12); }
+    button:active { transform: translateY(1px); }
+    #result {
+      margin-top: 0.75rem;
+      font-size: 1rem;
+      padding: 0.6rem 0.8rem;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fff;
+      color: #111;
+      min-height: 2.4rem;
+    }
+    .meta {
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+      color: #555;
+      text-align: center;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f1115; color: #eaeef2; }
+      .video-wrap { border-color: #222; }
+      .controls button {
+        background: #1a1d22; color: #eaeef2; border-color: #2a2f37;
+      }
+      #result { background: #1a1d22; color: #eaeef2; border-color: #2a2f37; }
+      .meta { color: #9aa4ad; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Barcode + QR Scanner</h1>
+
+    <div class="video-wrap" id="videoWrap">
+      <video id="video" autoplay playsinline></video>
+    </div>
+
+    <div id="result">No barcode found.</div>
+
+    <div class="controls">
+      <button id="switchBtn">Switch Camera (Back)</button>
+      <button id="installBtn" style="display:none;">Install App</button>
+    </div>
+
+    <div class="meta" id="cameraLabel">Camera: Back</div>
+  </main>
+
+  <!-- Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+
+  <script>
+    // State
+    let facingMode = "environment"; // start with back camera
+    let currentStream = null;
+    const video = document.getElementById("video");
+    const videoWrap = document.getElementById("videoWrap");
+    const resultBox = document.getElementById("result");
+    const switchBtn = document.getElementById("switchBtn");
+    const cameraLabel = document.getElementById("cameraLabel");
+    const installBtn = document.getElementById("installBtn");
+
+    // Canvas for frame capture
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+    // Detection control
+    let frameCount = 0;
+    let lastDetected = null;
+    let lastDetectedTime = 0;
+    let quaggaBusy = false; // prevent overlapping decodeSingle calls
+
+    // Start/Restart camera
+    async function startCamera() {
+      try {
+        // Stop previous stream
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+        }
+        const constraints = {
+          video: { facingMode }
+        };
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        cameraLabel.textContent = "Camera: " + (facingMode === "environment" ? "Back" : "Front");
+        switchBtn.textContent = "Switch Camera (" + (facingMode === "environment" ? "Back" : "Front") + ")";
+      } catch (err) {
+        console.error("Camera start failed:", err);
+        resultBox.textContent = "Camera error. Check permissions and reload.";
       }
     }
-  }
 
-  // Update UI: keep last detection for 2 seconds
-  if (lastDetected && Date.now() - lastDetectedTime < 2000) {
-    resultBox.textContent = lastDetected;
-  } else {
-    resultBox.textContent = "No barcode found.";
-  }
+    // Camera toggle
+    switchBtn.addEventListener("click", () => {
+      facingMode = (facingMode === "environment") ? "user" : "environment";
+      startCamera();
+    });
 
-  frameCount++;
-  requestAnimationFrame(scanFrame);
-}
-requestAnimationFrame(scanFrame);
+    // Visual flash helper
+    function flashDetected() {
+      videoWrap.classList.add("detected");
+      setTimeout(() => videoWrap.classList.remove("detected"), 250);
+    }
+
+    // Update UI with sticky result
+    function updateResultUI() {
+      if (lastDetected && Date.now() - lastDetectedTime < 2000) {
+        resultBox.textContent = lastDetected;
+      } else {
+        resultBox.textContent = "No barcode found.";
+      }
+    }
+
+    // Main scanning loop
+    function scanFrame() {
+      try {
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+          // 1) Fast QR detection every frame
+          const qrResult = jsQR(imageData.data, canvas.width, canvas.height);
+          if (qrResult && qrResult.data) {
+            lastDetected = "QR: " + qrResult.data;
+            lastDetectedTime = Date.now();
+            flashDetected();
+          } else {
+            // 2) Throttled 1D barcode detection with Quagga (every 10th frame)
+            if (!quaggaBusy && frameCount % 10 === 0) {
+              quaggaBusy = true;
+              Quagga.decodeSingle({
+                src: canvas.toDataURL("image/png"),
+                numOfWorkers: 0, // iOS Safari compatibility
+                inputStream: { size: canvas.width },
+                decoder: {
+                  readers: [
+                    "code_128_reader",
+                    "ean_reader",
+                    "ean_8_reader",
+                    "upc_reader",
+                    "upc_e_reader",
+                    "code_39_reader"
+                  ]
+                },
+                locate: true
+              }, function(result) {
+                quaggaBusy = false;
+                if (result && result.codeResult && result.codeResult.code) {
+                  lastDetected = "Barcode: " + result.codeResult.code;
+                  lastDetectedTime = Date.now();
+                  flashDetected();
+                }
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Scan error:", err);
+      }
+
+      updateResultUI();
+      frameCount++;
+      requestAnimationFrame(scanFrame);
+    }
+
+    // Boot
+    startCamera().then(() => requestAnimationFrame(scanFrame));
+
+    // Service worker with caching (libraries + app shell)
+    if ("serviceWorker" in navigator) {
+      const swCode = `
+        const CACHE_NAME = 'scanner-cache-v2';
+        const urlsToCache = [
+          // Cache the page route (scope) so the app shell loads offline
+          self.registration.scope,
+          // Libraries
+          'https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js',
+          'https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js'
+        ];
+
+        self.addEventListener('install', event => {
+          event.waitUntil(
+            caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache))
+          );
+        });
+
+        self.addEventListener('activate', event => {
+          event.waitUntil(
+            caches.keys().then(keys => Promise.all(
+              keys.map(k => k !== CACHE_NAME ? caches.delete(k) : Promise.resolve())
+            ))
+          );
+        });
+
+        self.addEventListener('fetch', event => {
+          const { request } = event;
+          // Try cache first, then network (stale-while-revalidate pattern simplified)
+          event.respondWith(
+            caches.match(request).then(cached => {
+              if (cached) return cached;
+              return fetch(request).then(response => {
+                // Cache successful GET responses for next time
+                if (request.method === 'GET' && response && response.status === 200 && response.type === 'basic') {
+                  const copy = response.clone();
+                  caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+                }
+                return response;
+              }).catch(() => {
+                // Fallback to app shell for navigations when offline
+                if (request.mode === 'navigate') {
+                  return caches.match(self.registration.scope);
+                }
+              });
+            })
+          );
+        });
+      `;
+      const blob = new Blob([swCode], { type: "application/javascript" });
+      const swUrl = URL.createObjectURL(blob);
+      navigator.serviceWorker.register(swUrl).catch(err => console.error("SW register error:", err));
+    }
+
+    // Install App prompt
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      installBtn.style.display = 'inline-block';
+    });
+    installBtn.addEventListener('click', () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(choice => {
+          console.log('Install choice:', choice.outcome);
+          deferredPrompt = null;
+          installBtn.style.display = 'none';
+        });
+      }
+    });
+
+    // Page visibility: pause camera when hidden (optional)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+      } else {
+        startCamera();
+      }
+    });
+  </script>
+</body>
+</html>
