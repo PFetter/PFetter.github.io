@@ -1,109 +1,45 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Barcode + QR Scanner PWA</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+let frameCount = 0;
+let lastDetected = null;
+let lastDetectedTime = 0;
 
-  <!-- PWA manifest -->
-  <link rel="manifest" href="data:application/json,{
-    &quot;name&quot;:&quot;BarcodeQRScanner&quot;,
-    &quot;short_name&quot;:&quot;Scanner&quot;,
-    &quot;start_url&quot;:&quot;.&quot;,
-    &quot;display&quot;:&quot;standalone&quot;,
-    &quot;background_color&quot;:&quot;#ffffff&quot;,
-    &quot;theme_color&quot;:&quot;#000000&quot;,
-    &quot;icons&quot;: []
-  }">
+function scanFrame() {
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-  <style>
-    body { font-family: sans-serif; text-align: center; margin: 0; }
-    video { width: 100%; max-width: 500px; }
-    #result { margin-top: 1em; font-size: 1.2em; }
-    button { margin-top: 1em; padding: 0.5em 1em; }
-  </style>
-</head>
-<body>
-  <h1>Barcode + QR Scanner</h1>
-  <video id="video" autoplay playsinline></video>
-  <div id="result">No barcode found.</div>
-  <button id="switchBtn">Switch Camera (Back)</button>
-  <button id="installBtn" style="display:none;">Install App</button>
-
-  <!-- Libraries -->
-  <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
-
-  <script>
-    let facingMode = "environment"; // start with back camera
-    const video = document.getElementById("video");
-    const resultBox = document.getElementById("result");
-    const switchBtn = document.getElementById("switchBtn");
-    const installBtn = document.getElementById("installBtn");
-
-    async function startCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode }
-      });
-      video.srcObject = stream;
-    }
-
-    // Switch camera
-    switchBtn.addEventListener("click", () => {
-      facingMode = (facingMode === "environment") ? "user" : "environment";
-      switchBtn.textContent = "Switch Camera (" + (facingMode === "environment" ? "Back" : "Front") + ")";
-      startCamera();
-    });
-
-    startCamera();
-
-    // Capture frames for scanning
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-
-    function scanFrame() {
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-        // Try QR first
-        const qr = jsQR(imageData.data, canvas.width, canvas.height);
-        if (qr) {
-          resultBox.textContent = "QR: " + qr.data;
-        } else {
-          // Try 1D barcodes with Quagga
-          Quagga.decodeSingle({
-            src: canvas.toDataURL(),
-            numOfWorkers: 0,
-            inputStream: { size: canvas.width },
-            decoder: { readers: ["code_128_reader","ean_reader","upc_reader","code_39_reader"] }
-          }, function(result) {
-            if (result && result.codeResult) {
-              resultBox.textContent = "Barcode: " + result.codeResult.code;
-            } else {
-              resultBox.textContent = "No barcode found.";
-            }
-          });
-        }
-      }
-      requestAnimationFrame(scanFrame);
-    }
-    requestAnimationFrame(scanFrame);
-
-    // Service worker with caching
-    if ("serviceWorker" in navigator) {
-      const swCode = `
-        const CACHE_NAME = 'scanner-cache-v1';
-        const urlsToCache = [
-          '/',
-          'https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js',
-          'https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js'
-        ];
-        self.addEventListener('install', event => {
-          event.waitUntil(
-            caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache))
-          );
+    // Try QR every frame (fast)
+    const qr = jsQR(imageData.data, canvas.width, canvas.height);
+    if (qr) {
+      lastDetected = "QR: " + qr.data;
+      lastDetectedTime = Date.now();
+    } else {
+      // Only run Quagga every 10th frame
+      if (frameCount % 10 === 0) {
+        Quagga.decodeSingle({
+          src: canvas.toDataURL(),
+          numOfWorkers: 0,
+          inputStream: { size: canvas.width },
+          decoder: { readers: ["code_128_reader","ean_reader","upc_reader","code_39_reader"] }
+        }, function(result) {
+          if (result && result.codeResult) {
+            lastDetected = "Barcode: " + result.codeResult.code;
+            lastDetectedTime = Date.now();
+          }
         });
-        self.addEventListener
+      }
+    }
+  }
+
+  // Update UI: keep last detection for 2 seconds
+  if (lastDetected && Date.now() - lastDetectedTime < 2000) {
+    resultBox.textContent = lastDetected;
+  } else {
+    resultBox.textContent = "No barcode found.";
+  }
+
+  frameCount++;
+  requestAnimationFrame(scanFrame);
+}
+requestAnimationFrame(scanFrame);
