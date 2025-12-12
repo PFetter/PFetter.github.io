@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Capture, Copy & Share Image</title>
+  <title>Capture, Copy & Scan Barcode</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -25,6 +25,13 @@
       border: 2px solid #333;
       border-radius: 8px;
       margin: 1rem 0;
+    }
+
+    .indicator {
+      font-size: clamp(0.9rem, 2vw, 1.2rem);
+      margin: 0.5rem 0;
+      font-weight: bold;
+      color: #0078d7;
     }
 
     .buttons {
@@ -58,11 +65,19 @@
         width: 100%;
       }
     }
+
+    #barcodeResult {
+      margin-top: 1rem;
+      font-size: 1rem;
+      color: #333;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
-  <h1>Capture, Copy & Share Image</h1>
+  <h1>Capture, Copy & Scan Barcode</h1>
   <video id="video" autoplay playsinline></video>
+  <div id="cameraIndicator" class="indicator">Camera: Front</div>
   <canvas id="canvas" style="display:none;"></canvas>
   <img id="snapshot" alt="Captured image will appear here">
 
@@ -72,7 +87,13 @@
     <button id="downloadBtn">Download Image</button>
     <button id="toggleCameraBtn">Switch Camera</button>
     <button id="shareBtn" style="display:none;">Share Image</button>
+    <button id="scanBtn">Scan Barcode</button>
   </div>
+
+  <div id="barcodeResult"></div>
+
+  <!-- Load Quagga2 from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
 
   <script>
     const video = document.getElementById('video');
@@ -83,6 +104,9 @@
     const downloadBtn = document.getElementById('downloadBtn');
     const toggleCameraBtn = document.getElementById('toggleCameraBtn');
     const shareBtn = document.getElementById('shareBtn');
+    const scanBtn = document.getElementById('scanBtn');
+    const cameraIndicator = document.getElementById('cameraIndicator');
+    const barcodeResult = document.getElementById('barcodeResult');
 
     let currentFacingMode = "user"; // start with front camera
     let stream;
@@ -94,6 +118,7 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
         video.srcObject = stream;
+        cameraIndicator.textContent = "Camera: " + (facingMode === "user" ? "Front" : "Back");
       } catch (err) {
         alert("Error accessing camera: " + err);
       }
@@ -179,6 +204,30 @@
         }
       });
     }
+
+    // Scan barcode using Quagga2
+    scanBtn.addEventListener('click', () => {
+      if (!snapshot.src) {
+        alert("Please capture an image first.");
+        return;
+      }
+      Quagga.decodeSingle({
+        src: snapshot.src,
+        numOfWorkers: 0, // required for iOS Safari
+        inputStream: {
+          size: 800  // restrict input size for performance
+        },
+        decoder: {
+          readers: ["code_128_reader", "ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_39_reader", "qr_reader"]
+        }
+      }, function(result) {
+        if (result && result.codeResult) {
+          barcodeResult.textContent = "Barcode detected: " + result.codeResult.code;
+        } else {
+          barcodeResult.textContent = "No barcode found.";
+        }
+      });
+    });
   </script>
 </body>
 </html>
