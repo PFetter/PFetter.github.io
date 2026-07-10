@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fsrs-engine</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#0f172a" />
+  </head>
+  <body>
+    <main>
+      <h1>fsrs-engine</h1>
+      <p>Framework-free FSRS-6 scheduler. Review UI arrives post-v1.</p>
+      <pre id="smoke">loading…</pre>
+      <div id="cloze-demo"></div>
+    </main>
+
+    <!-- M11: register the app-shell service worker so the app loads fully
+         offline after the first visit. Registration failure (e.g. running
+         from file:// instead of http(s)://) is logged, not fatal. -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./service-worker.js').catch((err) => {
+            console.warn('service worker registration failed:', err);
+          });
+        });
+      }
+    </script>
+
+    <!-- Full-stack smoke check: the same lib/ modules used headless by
+         node --test wired to the real browser IndexedDB adapter — the one
+         path node --test can't exercise (see README, plan §6). -->
+    <script type="module">
+      import { Rating } from './lib/fsrs.js';
+      import { createEmptyCard, createScheduler } from './lib/scheduler.js';
+      import { createIndexedDbAdapter, openDatabase } from './lib/db.js';
+      import { selectDueQueue } from './lib/queue.js';
+      import { renderCodeCloze } from './lib/cloze.js';
+      import { exportAll } from './lib/exportImport.js';
+
+      const log = (msg) => {
+        document.getElementById('smoke').textContent += msg + '\n';
+      };
+      document.getElementById('smoke').textContent = '';
+
+      try {
+        const scheduler = createScheduler();
+        let card = createEmptyCard(new Date(), { type: 'code-cloze', front: 'return {{c1::a + b}};' });
+        ({ card } = scheduler.next(card, new Date(), Rating.Good));
+        log(`scheduled: state=${card.state} due=${card.due}`);
+
+        const due = selectDueQueue([card], new Date(Date.now() + 1000 * 60 * 60 * 24 * 30));
+        log(`due-queue (30d out): ${due.length} card(s)`);
+
+        const adapter = createIndexedDbAdapter('fsrs-engine-demo');
+        await openDatabase(adapter);
+        await adapter.putCard(card);
+        const reloaded = await adapter.getCard(card.id);
+        log(`IndexedDB round-trip ok: ${reloaded.id === card.id}`);
+
+        const dump = await exportAll(adapter);
+        log(`export: ${dump.cards.length} card(s), formatVersion=${dump.formatVersion}`);
+      } catch (err) {
+        log(`error: ${err.message}`);
+      }
+
+      document.getElementById('cloze-demo').innerHTML =
+        renderCodeCloze('return {{c1::a + b}};');
+    </script>
+  </body>
+</html>
